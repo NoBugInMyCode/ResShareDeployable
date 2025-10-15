@@ -10,3 +10,4 @@ requests==2.31.0
 sentence-transformers
 transformers
 huggingface_hub
+python-dotenv

@@ -24,6 +24,9 @@ import {
   Snackbar,
   LinearProgress,
   Tooltip,
+  FormControlLabel,
+  Switch,
+  Divider,
 } from '@mui/material';
 import {
   Folder,
@@ -46,6 +49,8 @@ import {
   Archive,
   TableChart,
   Slideshow,
+  Psychology,
+  SmartToy,
 } from '@mui/icons-material';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../App';
@@ -62,10 +67,16 @@ const FileExplorer = () => {
   const [menuAnchor, setMenuAnchor] = useState(null);
   const [createFolderOpen, setCreateFolderOpen] = useState(false);
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
+  const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploading, setUploading] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [shareUsername, setShareUsername] = useState('');
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [aiModeEnabled, setAiModeEnabled] = useState(() => {
+    const saved = localStorage.getItem('aiModeEnabled');
+    return saved !== null ? JSON.parse(saved) : true;
+  });
   const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'info' });
 
   useEffect(() => {
@@ -172,23 +183,47 @@ const FileExplorer = () => {
     }
   };
 
-  const handleUpload = async (event) => {
-    const file = event.target.files[0];
-    if (!file) return;
+  const handleUploadButtonClick = () => {
+    console.log('Upload button clicked, opening dialog');
+    setUploadDialogOpen(true);
+  };
 
-    const sizeValidation = utils.validateFileSize(file, 1);
+  const handleFileSelect = (event) => {
+    const file = event.target.files[0];
+    if (file) {
+      setSelectedFile(file);
+    }
+  };
+
+  const handleAiModeToggle = (event) => {
+    const enabled = event.target.checked;
+    console.log('[State] Setting aiModeEnabled =', enabled);
+    setAiModeEnabled(enabled);
+    try {
+      localStorage.setItem('aiModeEnabled', JSON.stringify(enabled));
+      console.log('[Storage] aiModeEnabled saved to localStorage:', enabled);
+    } catch (err) {
+      console.warn('[Storage] Failed to save aiModeEnabled:', err);
+    }
+  };
+
+  const handleUploadConfirm = async () => {
+    if (!selectedFile) return;
+
+    const sizeValidation = utils.validateFileSize(selectedFile, 1);
     if (!sizeValidation.isValid) {
       setSnackbar({
         open: true,
         message: sizeValidation.error,
         severity: 'error',
       });
-      event.target.value = '';
       return;
     }
 
+    console.log('[Upload] Starting upload. aiModeEnabled=', aiModeEnabled, 'skip will be', !aiModeEnabled);
     setUploading(true);
     setUploadProgress(0);
+    setUploadDialogOpen(false);
 
     try {
       // Simulate upload progress for better UX
@@ -202,7 +237,19 @@ const FileExplorer = () => {
         });
       }, 200);
 
-      const response = await fileAPI.uploadFile(file, currentPath || '');
+      console.log('[Upload] Calling API with', {
+        path: currentPath || '',
+        skip_ai_processing: !aiModeEnabled,
+        filename: selectedFile?.name,
+        size: selectedFile?.size,
+      });
+      const response = await fileAPI.uploadFile(selectedFile, currentPath || '', !aiModeEnabled);
+      console.log('Upload response flags:', {
+        rag_processed: response?.rag_processed,
+        rag_skipped: response?.rag_skipped,
+        skip_ai_processing_sent: !aiModeEnabled,
+        skip_ai_processing_backend: response?.skip_ai_processing,
+      });
       
       clearInterval(progressInterval);
       setUploadProgress(100);
@@ -210,9 +257,17 @@ const FileExplorer = () => {
       if (response.message === 'SUCCESS') {
         // Update the root data with the new file
         setRootData(JSON.parse(response.root));
+        
+        let message = 'File uploaded successfully!';
+        if (response.rag_skipped) {
+          message += ' AI processing was skipped.';
+        } else if (response.rag_processed) {
+          message += ' Ready for AI chat.';
+        }
+        
         setSnackbar({
           open: true,
-          message: 'File uploaded successfully!',
+          message: message,
           severity: 'success',
         });
       } else {
@@ -221,19 +276,26 @@ const FileExplorer = () => {
           message: response.message || 'Failed to upload file',
           severity: 'error',
         });
+        console.warn('[Upload] Non-success response:', response);
       }
     } catch (error) {
-      console.error('Upload error:', error);
+      console.error('[Upload] Error thrown:', error);
       setSnackbar({
         open: true,
         message: error.message || 'Network error. Please try again.',
         severity: 'error',
       });
     } finally {
+      console.log('[Upload] Finalizing upload UI state reset');
       setUploading(false);
       setTimeout(() => setUploadProgress(0), 1000);
-      event.target.value = '';
+      setSelectedFile(null);
     }
+  };
+
+  const handleUploadCancel = () => {
+    setUploadDialogOpen(false);
+    setSelectedFile(null);
   };
 
   const handleDownload = async (fileName) => {
@@ -293,7 +355,6 @@ const FileExplorer = () => {
             }
           }
         } else {
-          // Fallback for browsers that don't support File System Access API
           console.log("No file system access API");
           const url = window.URL.createObjectURL(blob);
           const a = document.createElement('a');
@@ -571,24 +632,43 @@ const FileExplorer = () => {
             <Typography variant="caption" color="text.secondary">
               Max: 1 MB
             </Typography>
-            <input
-              accept="*/*"
-              style={{ display: 'none' }}
-              id="upload-file"
-              type="file"
-              onChange={handleUpload}
-              title="Maximum file size: 1 MB"
+
+            {/* AI Processing Toggle (global for uploads) */}
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={aiModeEnabled}
+                  onChange={(e) => {
+                    console.log('[UI] Toolbar AI toggle changed to', e.target.checked);
+                    handleAiModeToggle(e);
+                  }}
+                  color="primary"
+                  size="small"
+                />
+              }
+              label={
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  {aiModeEnabled ? (
+                    <Psychology sx={{ fontSize: 16, color: 'primary.main' }} />
+                  ) : (
+                    <SmartToy sx={{ fontSize: 16, color: 'text.secondary' }} />
+                  )}
+                  <Typography variant="caption" color="text.secondary">
+                    AI {aiModeEnabled ? 'On' : 'Off'}
+                  </Typography>
+                </Box>
+              }
+              sx={{ m: 0 }}
             />
-            <label htmlFor="upload-file">
-              <Button
-                variant="contained"
-                component="span"
-                startIcon={<Upload />}
-                disabled={uploading}
-              >
-                Upload
-              </Button>
-            </label>
+
+            <Button
+              variant="contained"
+              startIcon={<Upload />}
+              disabled={uploading}
+              onClick={handleUploadButtonClick}
+            >
+              Upload
+            </Button>
           </Box>
 
           <Button
@@ -679,6 +759,104 @@ const FileExplorer = () => {
           <Button onClick={() => setShareDialogOpen(false)}>Cancel</Button>
           <Button onClick={handleShare} variant="contained">
             Share
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Upload Dialog */}
+      <Dialog 
+        open={uploadDialogOpen} 
+        onClose={handleUploadCancel} 
+        maxWidth="sm" 
+        fullWidth
+        sx={{ zIndex: 9999 }}
+      >
+        <DialogTitle>Upload File</DialogTitle>
+        <DialogContent>
+          <Box sx={{ py: 2 }}>
+            <Typography variant="body1" sx={{ mb: 2 }}>
+              Select a file to upload to your drive.
+            </Typography>
+            
+            <input
+              accept="*/*"
+              style={{ display: 'none' }}
+              id="upload-file-input"
+              type="file"
+              onChange={handleFileSelect}
+            />
+            <label htmlFor="upload-file-input">
+              <Button
+                variant="outlined"
+                component="span"
+                startIcon={<Upload />}
+                fullWidth
+                sx={{ mb: 3 }}
+              >
+                {selectedFile ? selectedFile.name : 'Choose File'}
+              </Button>
+            </label>
+
+            {selectedFile && (
+              <Box sx={{ mb: 3 }}>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                  Selected: {selectedFile.name}
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  Size: {utils.formatFileSize(selectedFile.size)}
+                </Typography>
+              </Box>
+            )}
+
+            <Divider sx={{ my: 2 }} />
+
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+              {aiModeEnabled ? (
+                <Psychology sx={{ color: 'primary.main' }} />
+              ) : (
+                <SmartToy sx={{ color: 'text.secondary' }} />
+              )}
+              <Typography variant="subtitle2">
+                AI Processing Options
+              </Typography>
+            </Box>
+
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={aiModeEnabled}
+                  onChange={handleAiModeToggle}
+                  color="primary"
+                />
+              }
+              label={
+                <Box>
+                  <Typography variant="body2">
+                    {aiModeEnabled
+                      ? "Enable AI processing for this file"
+                      : "Skip AI processing for this file"
+                    }
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {aiModeEnabled
+                      ? "File will be processed for AI chat capabilities. Supported formats: PDF, DOCX, TXT"
+                      : "File will be stored without AI processing. You can still chat with other processed files."
+                    }
+                  </Typography>
+                </Box>
+              }
+              sx={{ alignItems: 'flex-start' }}
+            />
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleUploadCancel}>Cancel</Button>
+          <Button 
+            onClick={handleUploadConfirm} 
+            variant="contained"
+            disabled={!selectedFile}
+          >
+            Upload
           </Button>
         </DialogActions>
       </Dialog>

@@ -24,6 +24,8 @@ import {
   LinearProgress,
   Menu,
   MenuItem,
+  FormControlLabel,
+  Switch,
 } from '@mui/material';
 import {
   Add,
@@ -38,6 +40,8 @@ import {
   MoreVert,
   Download,
   Visibility,
+  Psychology,
+  SmartToy,
 } from '@mui/icons-material';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../App';
@@ -62,6 +66,10 @@ const HomePage = () => {
   const fileInputRef = React.useRef(null);
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
   const [shareUsername, setShareUsername] = useState('');
+  const [aiModeEnabled, setAiModeEnabled] = useState(() => {
+    const saved = localStorage.getItem('aiModeEnabled');
+    return saved !== null ? JSON.parse(saved) : true;
+  });
 
   useEffect(() => {
     if (rootData) {
@@ -202,16 +210,25 @@ const HomePage = () => {
         });
       }, 200);
 
-      const response = await fileAPI.uploadFile(file, '');
+      console.log('[HomePage] Uploading with aiModeEnabled=', aiModeEnabled, 'skip=', !aiModeEnabled);
+      const response = await fileAPI.uploadFile(file, '', !aiModeEnabled);
       
       clearInterval(progressInterval);
       setUploadProgress(100);
 
       if (response.message === 'SUCCESS') {
         setRootData(JSON.parse(response.root));
+        
+        let message = 'File uploaded successfully!';
+        if (response.rag_skipped) {
+          message += ' AI processing was skipped.';
+        } else if (response.rag_processed) {
+          message += ' Ready for AI chat.';
+        }
+        
         setSnackbar({
           open: true,
-          message: 'File uploaded successfully!',
+          message: message,
           severity: 'success',
         });
       } else {
@@ -696,10 +713,40 @@ const HomePage = () => {
                 My Files
               </Typography>
             </Box>
-            <Box sx={{ mb: 2 }}>
+            <Box sx={{ mb: 2, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <Typography variant="body2" color="text.secondary">
                 Maximum file size: 1 MB
               </Typography>
+              
+              {/* AI Processing Toggle */}
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={aiModeEnabled}
+                    onChange={(e) => {
+                      const enabled = e.target.checked;
+                      console.log('[HomePage] AI toggle changed to', enabled);
+                      setAiModeEnabled(enabled);
+                      localStorage.setItem('aiModeEnabled', JSON.stringify(enabled));
+                    }}
+                    color="primary"
+                    size="small"
+                  />
+                }
+                label={
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                    {aiModeEnabled ? (
+                      <Psychology sx={{ fontSize: 16, color: 'primary.main' }} />
+                    ) : (
+                      <SmartToy sx={{ fontSize: 16, color: 'text.secondary' }} />
+                    )}
+                    <Typography variant="caption" color="text.secondary">
+                      AI {aiModeEnabled ? 'On' : 'Off'}
+                    </Typography>
+                  </Box>
+                }
+                sx={{ m: 0 }}
+              />
             </Box>
             <Grid container spacing={2}>
               {renderRootItems()}

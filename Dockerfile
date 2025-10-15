@@ -76,12 +76,12 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 # Copy the entire application
 COPY . /app/
 
-# Build with Bazel
-WORKDIR /app/backend/bazel
-RUN bazel build //kv_service:pybind_kv.so
+# Build with Bazel (commented out since using API instead of pybind)
+# WORKDIR /app/backend/bazel
+# RUN bazel build //kv_service:pybind_kv.so
 
-# Copy the built .so file to backend directory
-RUN cp -f bazel-bin/kv_service/pybind_kv.so /app/backend/
+# Copy the built .so file to backend directory (commented out)
+# RUN cp -f bazel-bin/kv_service/pybind_kv.so /app/backend/
 
 # Back to app directory
 WORKDIR /app

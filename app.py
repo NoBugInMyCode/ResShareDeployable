@@ -33,28 +33,38 @@ additional_origins = os.environ.get('CORS_ORIGINS', '')
 if additional_origins:
     allowed_origins.extend([origin.strip() for origin in additional_origins.split(',') if origin.strip()])
 
-CORS(app, supports_credentials=True, origins=allowed_origins)
+CORS(app, supports_credentials=True)
 
 secret_key = os.environ.get('FLASK_SECRET_KEY')
 if not secret_key:
     raise RuntimeError("FLASK_SECRET_KEY is required in production for session management")
 app.secret_key = secret_key
 
+is_development = os.environ.get('FLASK_ENV', 'development') == 'development'
+if is_development:
+    app.config['SESSION_COOKIE_HTTPONLY'] = True
+    app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+else :
+    app.config['SESSION_COOKIE_HTTPONLY'] = False  # Allow JavaScript access for cross-origin
+    app.config['SESSION_COOKIE_SAMESITE'] = 'None' #Allow cross-origin cookies
 # Configure session cookies for cross-origin requests (Vercel <-> EC2/ngrok)
-app.config['SESSION_COOKIE_SAMESITE'] = 'None'  # Allow cross-site cookies
-app.config['SESSION_COOKIE_SECURE'] = True      # Required for SameSite=None (HTTPS only)
-app.config['SESSION_COOKIE_HTTPONLY'] = True    # Security: prevent XSS attacks
+app.config['SESSION_COOKIE_SECURE'] = False
+app.config['PERMANENT_SESSION_LIFETIME'] = 86400  # 24 hours
+app.config['SESSION_COOKIE_NAME'] = 'session'
+app.config['SESSION_COOKIE_DOMAIN'] = None
+app.config['SESSION_COOKIE_PATH'] = '/'
 
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if 'username' not in session:
+            logger.info("User not logged in")
             return jsonify({'message': ErrorCode.NOT_LOGGED_IN.name}), 401
         return f(*args, **kwargs)
     return decorated_function
 
 @app.route('/login', methods=['POST'])
-def login_route():
+def login_route():    
     data = request.get_json()
     username = data['username']
     password = data['password']
@@ -63,15 +73,20 @@ def login_route():
 
     if result == ErrorCode.SUCCESS:
         session['username'] = username
+        session.permanent = True
         root_json = get_kv(username + " ROOT")
         root_json = json.loads(root_json)
         share_list = get_kv(username + " SHARE_MANAGER")
         share_list = json.loads(share_list)
-        return jsonify({
+        
+        response = jsonify({
             'result': result.name,
             'root': root_json,
             'share_list': share_list
-        }), 200
+        })
+        
+        logger.info(f"Response headers: {dict(response.headers)}")
+        return response, 200
 
     return jsonify({'result': result.name}), 401
 
@@ -202,6 +217,9 @@ def upload_route():
     path = request.form['path']
     username = session['username']
     file = request.files['file']
+    raw_skip_flag = request.form.get('skip_ai_processing', 'false')
+    skip_ai_processing = raw_skip_flag.lower() == 'true'
+    logger.info(f"Upload request: user={username}, file={file.filename if file else 'N/A'}, skip_ai_processing_raw='{raw_skip_flag}', parsed={skip_ai_processing}")
 
     if file.filename == '':
         return jsonify({'message': ErrorCode.INVALID_REQUEST.name}), 400
@@ -235,30 +253,38 @@ def upload_route():
     set_kv(username + " ROOT", root.to_json())
 
     rag_success = False
-    supported_extensions = {'pdf', 'docx', 'txt'}
-    file_extension = filename.lower().split('.')[-1] if '.' in filename else ''
+    rag_skipped = False
     
-    if file_extension in supported_extensions:
-        try:
-            file_stream.seek(0)
-            file_content = file_stream.read()
-            
-            rag_manager = get_rag_manager()
-            rag_success = rag_manager.process_file_for_rag(file_content, filename, username, cid)
-            
-            if rag_success:
-                logger.info(f"Successfully processed {filename} for RAG for user {username}")
-            else:
-                logger.warning(f"Failed to process {filename} for RAG for user {username}")
+    if not skip_ai_processing:
+        supported_extensions = {'pdf', 'docx', 'txt'}
+        file_extension = filename.lower().split('.')[-1] if '.' in filename else ''
+        
+        if file_extension in supported_extensions:
+            try:
+                file_stream.seek(0)
+                file_content = file_stream.read()
                 
-        except Exception as e:
-            logger.error(f"RAG processing error for {filename}: {e}")
-            rag_success = False
+                rag_manager = get_rag_manager()
+                rag_success = rag_manager.process_file_for_rag(file_content, filename, username, cid)
+                
+                if rag_success:
+                    logger.info(f"Successfully processed {filename} for RAG for user {username}")
+                else:
+                    logger.warning(f"Failed to process {filename} for RAG for user {username}")
+                    
+            except Exception as e:
+                logger.error(f"RAG processing error for {filename}: {e}")
+                rag_success = False
+    else:
+        rag_skipped = True
+        logger.info(f"RAG processing skipped for {filename} for user {username} (AI mode disabled)")
 
     response_data = {
         'message': ErrorCode.SUCCESS.name, 
         'root': root.to_json(),
-        'rag_processed': rag_success
+        'rag_processed': rag_success,
+        'rag_skipped': rag_skipped,
+        'skip_ai_processing': skip_ai_processing
     }
     
     return jsonify(response_data), 200

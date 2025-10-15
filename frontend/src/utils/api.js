@@ -79,7 +79,8 @@ export const fileAPI = {
     return handleResponse(response);
   },
 
-  uploadFile: async (file, path) => {
+  uploadFile: async (file, path, skipAiProcessing = false) => {
+    console.log('[API] uploadFile called with:', { path, skipAiProcessing, filename: file?.name, size: file?.size });
     const sizeValidation = utils.validateFileSize(file, 1); // 1 MB limit
     if (!sizeValidation.isValid) {
       throw new Error(sizeValidation.error);
@@ -88,13 +89,17 @@ export const fileAPI = {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('path', path || '');
+    formData.append('skip_ai_processing', skipAiProcessing.toString());
+    console.log('[API] FormData prepared skip_ai_processing=', skipAiProcessing.toString());
 
     const response = await fetch(`${API_BASE_URL}/upload`, {
       method: 'POST',
       credentials: 'include',
       body: formData,
     });
-    return handleResponse(response);
+    const data = await handleResponse(response);
+    console.log('[API] Upload response received:', data);
+    return data;
   },
 
   downloadFile: async (path, isShared = false) => {
