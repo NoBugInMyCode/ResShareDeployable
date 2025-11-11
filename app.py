@@ -33,7 +33,7 @@ additional_origins = os.environ.get('CORS_ORIGINS', '')
 if additional_origins:
     allowed_origins.extend([origin.strip() for origin in additional_origins.split(',') if origin.strip()])
 
-CORS(app, supports_credentials=True)
+CORS(app, origins=allowed_origins, supports_credentials=True)
 
 secret_key = os.environ.get('FLASK_SECRET_KEY')
 if not secret_key:
@@ -44,11 +44,11 @@ is_development = os.environ.get('FLASK_ENV', 'development') == 'development'
 if is_development:
     app.config['SESSION_COOKIE_HTTPONLY'] = True
     app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
-else :
-    app.config['SESSION_COOKIE_HTTPONLY'] = False  # Allow JavaScript access for cross-origin
-    app.config['SESSION_COOKIE_SAMESITE'] = 'None' #Allow cross-origin cookies
-# Configure session cookies for cross-origin requests (Vercel <-> EC2/ngrok)
-app.config['SESSION_COOKIE_SECURE'] = False
+    app.config['SESSION_COOKIE_SECURE'] = False
+else:
+    app.config['SESSION_COOKIE_HTTPONLY'] = True
+    app.config['SESSION_COOKIE_SAMESITE'] = 'None'  # Required for cross-origin cookies
+    app.config['SESSION_COOKIE_SECURE'] = True  # Required when SameSite=None
 app.config['PERMANENT_SESSION_LIFETIME'] = 86400  # 24 hours
 app.config['SESSION_COOKIE_NAME'] = 'session'
 app.config['SESSION_COOKIE_DOMAIN'] = None
@@ -190,7 +190,7 @@ def delete_user_route():
     set_kv(username + " ROOT", "\n")
     set_kv(username + " SHARE_MANAGER", "\n")
 
-    session.pop(username)
+    session.pop('username')
 
     return jsonify({'message': ErrorCode.SUCCESS.name}), 200
 
@@ -199,6 +199,32 @@ def delete_user_route():
 def logout_route():
     session.pop('username', None)
     return jsonify({'message': ErrorCode.SUCCESS.name}), 200
+
+@app.route('/auth-status', methods=['GET'])
+def auth_status():
+    """Check if user has a valid session and return user data if authenticated"""
+    if 'username' in session:
+        username = session['username']
+        try:
+            root_json = get_kv(username + " ROOT")
+            share_list = get_kv(username + " SHARE_MANAGER")
+
+            if root_json and share_list and root_json != "\n" and share_list != "\n":
+                return jsonify({
+                    'authenticated': True,
+                    'username': username,
+                    'root': json.loads(root_json),
+                    'share_list': json.loads(share_list)
+                }), 200
+            else:
+                session.pop('username', None)
+                return jsonify({'authenticated': False}), 401
+        except Exception as e:
+            logger.error(f"Error checking auth status: {e}")
+            session.pop('username', None)
+            return jsonify({'authenticated': False}), 401
+
+    return jsonify({'authenticated': False}), 401
 
 
 @app.route('/upload', methods=['POST'])

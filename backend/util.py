@@ -26,7 +26,7 @@ def is_valid_username(username: str) -> bool:
         return False
     if any(c in username for c in ['\n', '\r', '\t']):
         return False
-    if username.isdigit():  # 全是数字
+    if username.isdigit():  # All digits
         return False
     return True
 

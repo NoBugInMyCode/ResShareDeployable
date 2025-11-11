@@ -153,6 +153,6 @@ User Query → Query Embedding → Vector Search → Context → LLM → Respons
 ### Components
 - **Text Extractors**: PDF (PyPDF2), DOCX (python-docx), TXT (UTF-8)
 - **Chunking**: LangChain RecursiveCharacterTextSplitter
-- **Embeddings**: Sentence Transformers (default: all-MiniLM-L6-v2)
+- **Embeddings**: Google Gemini API (gemini-embedding-001) with configurable dimensions (768/1536/3072)
 - **Vector DB**: FAISS with per-user isolation
 - **LLM**: Gemini 2.5 Flash (optional) or extractive fallback

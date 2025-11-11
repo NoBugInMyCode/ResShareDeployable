@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   AppBar,
   Toolbar,
@@ -10,6 +10,11 @@ import {
   Avatar,
   Tooltip,
   Button,
+  TextField,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
 } from '@mui/material';
 import {
   Brightness4,
@@ -24,6 +29,9 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth, useThemeMode } from '../App';
 import { authAPI } from '../utils/api';
 import { useTheme } from '@mui/material/styles';
+import { logger } from '../utils/logger';
+import { getErrorMessage } from '../utils/errorHandler';
+import ConfirmDialog from './ConfirmDialog';
 
 const Navbar = () => {
   const navigate = useNavigate();
@@ -31,35 +39,73 @@ const Navbar = () => {
   const { user, logout } = useAuth();
   const { darkMode, toggleTheme } = useThemeMode();
   const [anchorEl, setAnchorEl] = useState(null);
+  const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
+  const [deletePasswordOpen, setDeletePasswordOpen] = useState(false);
+  const [deletePassword, setDeletePassword] = useState('');
+  const [deleteError, setDeleteError] = useState('');
   const theme = useTheme();
 
-  const handleMenuOpen = (event) => {
+  const handleMenuOpen = useCallback((event) => {
     setAnchorEl(event.currentTarget);
-  };
+  }, []);
 
-  const handleMenuClose = () => {
+  const handleMenuClose = useCallback(() => {
     setAnchorEl(null);
-  };
+  }, []);
 
-  const handleLogout = async () => {
+  const handleLogout = useCallback(async () => {
     try {
       await authAPI.logout();
+      logger.info('Logout', 'User logged out successfully');
     } catch (error) {
-      console.error('Logout error:', error);
+      logger.error('Logout', error);
+      const errorMessage = getErrorMessage(error, 'Logout failed');
+      logger.error('Logout Error', errorMessage);
     }
     logout();
     navigate('/login');
     handleMenuClose();
-  };
+  }, [logout, navigate, handleMenuClose]);
 
-  const handleDeleteAccount = () => {
-    console.log('Delete account clicked');
+  const handleDeleteAccountClick = useCallback(() => {
     handleMenuClose();
-  };
+    setDeleteAccountOpen(true);
+  }, [handleMenuClose]);
 
-  const handleHomeClick = () => {
+  const handleDeleteAccountConfirm = useCallback(() => {
+    setDeleteAccountOpen(false);
+    setDeletePasswordOpen(true);
+  }, []);
+
+  const handleDeleteAccountCancel = useCallback(() => {
+    setDeleteAccountOpen(false);
+  }, []);
+
+  const handlePasswordDialogClose = useCallback(() => {
+    setDeletePasswordOpen(false);
+    setDeletePassword('');
+    setDeleteError('');
+  }, []);
+
+  const handleDeleteAccountSubmit = useCallback(async () => {
+    try {
+      setDeleteError('');
+      logger.info('Delete Account', 'Attempting to delete account');
+      await authAPI.deleteUser(deletePassword);
+      logger.info('Delete Account', 'Account deleted successfully');
+      logout();
+      navigate('/login');
+      handlePasswordDialogClose();
+    } catch (error) {
+      logger.error('Delete Account', error);
+      const errorMessage = getErrorMessage(error, 'Failed to delete account');
+      setDeleteError(errorMessage);
+    }
+  }, [deletePassword, logout, navigate, handlePasswordDialogClose]);
+
+  const handleHomeClick = useCallback(() => {
     navigate('/home');
-  };
+  }, [navigate]);
 
   const navButtonStyle = (active) => ({
     my: 2,
@@ -70,10 +116,12 @@ const Navbar = () => {
   });
 
   return (
-    <AppBar 
-      position="sticky" 
+    <AppBar
+      position="sticky"
       elevation={0}
-      sx={{ 
+      role="navigation"
+      aria-label="Main navigation"
+      sx={{
         backgroundColor: 'background.paper',
         borderBottom: 1,
         borderColor: 'divider',
@@ -81,7 +129,7 @@ const Navbar = () => {
     >
       <Toolbar sx={{ justifyContent: 'space-between' }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-          <img 
+          <img
             src="/logo192.png"
             alt="ResShare Logo"
             style={{
@@ -90,15 +138,31 @@ const Navbar = () => {
               cursor: 'pointer',
             }}
             onClick={handleHomeClick}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                handleHomeClick();
+              }
+            }}
           />
-          <Typography 
-            variant="h6" 
-            sx={{ 
+          <Typography
+            variant="h6"
+            sx={{
               color: theme.palette.text.primary,
               fontWeight: 600,
               cursor: 'pointer',
             }}
             onClick={handleHomeClick}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                handleHomeClick();
+              }
+            }}
           >
             ResShare Drive
           </Typography>
@@ -109,6 +173,8 @@ const Navbar = () => {
             onClick={() => navigate('/home')}
             sx={navButtonStyle(location.pathname === '/home')}
             startIcon={<Home sx={{ color: theme.palette.text.primary }} />}
+            aria-label="Navigate to Home"
+            aria-current={location.pathname === '/home' ? 'page' : undefined}
           >
             Home
           </Button>
@@ -116,6 +182,8 @@ const Navbar = () => {
             onClick={() => navigate('/explorer')}
             sx={navButtonStyle(location.pathname.startsWith('/explorer'))}
             startIcon={<Folder sx={{ color: theme.palette.text.primary }} />}
+            aria-label="Navigate to Explorer"
+            aria-current={location.pathname.startsWith('/explorer') ? 'page' : undefined}
           >
             Explorer
           </Button>
@@ -123,6 +191,8 @@ const Navbar = () => {
             onClick={() => navigate('/chat')}
             sx={navButtonStyle(location.pathname === '/chat')}
             startIcon={<SmartToy sx={{ color: theme.palette.text.primary }} />}
+            aria-label="Navigate to AI Chat"
+            aria-current={location.pathname === '/chat' ? 'page' : undefined}
           >
             AI Chat
           </Button>
@@ -226,20 +296,88 @@ const Navbar = () => {
               </Box>
             </MenuItem>
             
-            <MenuItem onClick={handleLogout} sx={{ color: theme.palette.text.primary }}>
+            <MenuItem
+              onClick={handleLogout}
+              sx={{ color: theme.palette.text.primary }}
+              aria-label="Logout from account"
+            >
               <Logout fontSize="medium" sx={{ mr: 2, color: theme.palette.action.active }} />
               Logout
             </MenuItem>
-            
-            <MenuItem onClick={handleDeleteAccount} sx={{ color: theme.palette.error.main }}>
+
+            <MenuItem
+              onClick={handleDeleteAccountClick}
+              sx={{ color: theme.palette.error.main }}
+              aria-label="Delete account permanently"
+            >
               <Delete fontSize="medium" sx={{ mr: 2, color: theme.palette.error.main }} />
               Delete Account
             </MenuItem>
           </Menu>
         </Box>
       </Toolbar>
+
+      {/* Delete Account Confirmation Dialog */}
+      <ConfirmDialog
+        open={deleteAccountOpen}
+        onClose={handleDeleteAccountCancel}
+        onConfirm={handleDeleteAccountConfirm}
+        title="Delete Account"
+        message="Are you sure you want to delete your account? This action is permanent and cannot be undone. All your files and data will be permanently deleted."
+        confirmText="Continue"
+        cancelText="Cancel"
+        isDestructive={true}
+      />
+
+      {/* Password Confirmation Dialog */}
+      <Dialog
+        open={deletePasswordOpen}
+        onClose={handlePasswordDialogClose}
+        aria-labelledby="delete-password-dialog-title"
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle id="delete-password-dialog-title">
+          Confirm Account Deletion
+        </DialogTitle>
+        <DialogContent>
+          <TextField
+            autoFocus
+            margin="dense"
+            label="Enter your password to confirm"
+            type="password"
+            fullWidth
+            variant="outlined"
+            value={deletePassword}
+            onChange={(e) => setDeletePassword(e.target.value)}
+            error={!!deleteError}
+            helperText={deleteError || 'Please enter your password to permanently delete your account'}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && deletePassword.trim()) {
+                e.preventDefault();
+                handleDeleteAccountSubmit();
+              }
+            }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handlePasswordDialogClose} color="primary">
+            Cancel
+          </Button>
+          <Button
+            onClick={handleDeleteAccountSubmit}
+            color="error"
+            variant="contained"
+            disabled={!deletePassword.trim()}
+          >
+            Delete Account
+          </Button>
+        </DialogActions>
+      </Dialog>
     </AppBar>
   );
 };
+
+Navbar.propTypes = {};
 
 export default Navbar; 

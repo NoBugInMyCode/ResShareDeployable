@@ -1,7 +1,7 @@
 import os
 import json
 import pickle
-from typing import List, Dict, Tuple, Optional, Any
+from typing import List, Dict
 from io import BytesIO
 import logging
 
@@ -10,7 +10,6 @@ from docx import Document
 import requests
 import faiss
 import numpy as np
-from sentence_transformers import SentenceTransformer
 
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.docstore.document import Document as LangchainDocument
@@ -25,18 +24,21 @@ class RAGManager:
     Handles text extraction, chunking, embeddings, and vector search.
     """
     
-    def __init__(self, vector_db_path: str = "backend/vector_db", embedding_model: str = "all-MiniLM-L6-v2"):
+    def __init__(self, vector_db_path: str = "backend/vector_db", 
+                 embedding_model: str = "gemini-embedding-001", 
+                 embedding_dimension: int = 768):
         """
         Initialize RAG Manager
         
         Args:
             vector_db_path: Path to store vector databases
-            embedding_model: Sentence transformer model name
+            embedding_model: Gemini embedding model name
+            embedding_dimension: Output embedding dimension (768, 1536, or 3072)
         """
         self.vector_db_path = vector_db_path
         self.embedding_model_name = embedding_model
-        self.embedding_model = None
-        self.embedding_dimension = 384
+        self.embedding_dimension = embedding_dimension
+        self.api_key = os.getenv('GOOGLE_API_KEY')
         
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=800,
@@ -47,19 +49,14 @@ class RAGManager:
         
         os.makedirs(self.vector_db_path, exist_ok=True)
         
-        self._initialize_embedding_model()
+        self._setup_gemini_api()
     
-    def _initialize_embedding_model(self):
-        """Initialize the sentence transformer model for embeddings"""
-        try:
-            logger.info(f"Loading embedding model: {self.embedding_model_name}")
-            self.embedding_model = SentenceTransformer(self.embedding_model_name)
-            dummy_embedding = self.embedding_model.encode(["test"])
-            self.embedding_dimension = dummy_embedding.shape[1]
-            logger.info(f"Embedding model loaded. Dimension: {self.embedding_dimension}")
-        except Exception as e:
-            logger.error(f"Failed to load embedding model: {e}")
-            raise
+    def _setup_gemini_api(self):
+        """Setup Gemini API configuration (no client needed for REST API)"""
+        api_key = os.getenv('GOOGLE_API_KEY')
+        if not api_key:
+            logger.warning("GOOGLE_API_KEY not found in environment variables")
+        return api_key is not None
     
     def extract_text_from_file(self, file_content: bytes, filename: str) -> str:
         """
@@ -152,7 +149,7 @@ class RAGManager:
     
     def generate_embeddings(self, texts: List[str]) -> np.ndarray:
         """
-        Generate embeddings for a list of texts
+        Generate embeddings for a list of texts using Gemini API batch processing
         
         Args:
             texts: List of text chunks
@@ -163,11 +160,73 @@ class RAGManager:
         if not texts:
             return np.array([])
         
+        logger.info(f"Generating embeddings for {len(texts)} texts")
+        
+        api_key = os.getenv('GOOGLE_API_KEY')
+        if not api_key:
+            logger.error("GOOGLE_API_KEY not found in environment variables")
+            return np.array([])
+        
+        logger.info(f"Using Gemini API with model: {self.embedding_model_name}, dimension: {self.embedding_dimension}")
+        
         try:
-            embeddings = self.embedding_model.encode(texts, convert_to_numpy=True)
-            return embeddings
+            url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:batchEmbedContents"
+            
+            headers = {
+                "x-goog-api-key": api_key,
+                "Content-Type": "application/json"
+            }
+            
+            requests_data = []
+            for text in texts:
+                requests_data.append({
+                    "model": "models/gemini-embedding-001",
+                    "content": {
+                        "parts": [{"text": text}]
+                    },
+                    "task_type": "RETRIEVAL_DOCUMENT",
+                    "output_dimensionality": self.embedding_dimension
+                })
+            
+            data = {"requests": requests_data}
+            
+            logger.info(f"Embedding request payload count: {len(requests_data)}")
+            response = requests.post(url, headers=headers, json=data, timeout=30)
+            response.raise_for_status()
+            
+            result = response.json()
+            logger.info(f"Embedding API responded with keys: {list(result.keys())}")
+            
+            embeddings = []
+            api_embeddings = result.get("embeddings", [])
+            logger.info(f"Embedding objects returned: {len(api_embeddings)}")
+            for embedding_response in api_embeddings:
+                embedding_values = np.array(embedding_response["values"])
+                if self.embedding_dimension < 3072:  # Normalize for truncated dimensions
+                    embedding_values = embedding_values / np.linalg.norm(embedding_values)
+                embeddings.append(embedding_values)
+            
+            if len(embeddings) != len(texts):
+                logger.info(f"Mismatch: expected {len(texts)} embeddings, got {len(embeddings)}")
+                return np.array([])
+            
+            embeddings_np = np.array(embeddings)
+            logger.info(f"Built embeddings array with shape {embeddings_np.shape}")
+            return embeddings_np
+            
+        except requests.exceptions.Timeout:
+            logger.error("Gemini API timeout during batch embedding generation")
+            return np.array([])
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Gemini API request failed: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                logger.error(f"Response status: {e.response.status_code}")
+                logger.error(f"Response body: {e.response.text}")
+            return np.array([])
         except Exception as e:
-            logger.error(f"Failed to generate embeddings: {e}")
+            logger.error(f"Failed to generate embeddings with Gemini API: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return np.array([])
     
     def get_user_vector_db_path(self, username: str) -> str:
@@ -194,8 +253,10 @@ class RAGManager:
         
         try:
             texts = [chunk['text'] for chunk in chunks]
+            logger.info(f"Preparing to add {len(texts)} chunks for user '{username}'")
             
             embeddings = self.generate_embeddings(texts)
+            logger.info(f"Embeddings generated with shape {embeddings.shape} (size={embeddings.size})")
             if embeddings.size == 0:
                 return False
             
@@ -206,12 +267,18 @@ class RAGManager:
                 index = faiss.read_index(faiss_index_path)
                 with open(metadata_path, 'rb') as f:
                     existing_metadata = pickle.load(f)
+                logger.info(f"Loaded existing FAISS index for '{username}' with ntotal={index.ntotal}")
             else:
                 index = faiss.IndexFlatIP(self.embedding_dimension)  # Inner product (cosine similarity)
                 existing_metadata = []
+                logger.info(f"Created new FAISS index with dimension d={self.embedding_dimension}")
             
             # Normalize embeddings for cosine similarity
-            embeddings = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
+            norms = np.linalg.norm(embeddings, axis=1)
+            logger.info(f"Embedding norms before normalization: min={norms.min():.6f}, max={norms.max():.6f}")
+            safe_denominator = np.maximum(norms, 1e-12)[:, None]
+            embeddings = embeddings / safe_denominator
+            logger.info(f"Adding {embeddings.shape[0]} vectors to FAISS index")
             index.add(embeddings)
             
             existing_metadata.extend(chunks)
@@ -220,7 +287,7 @@ class RAGManager:
             with open(metadata_path, 'wb') as f:
                 pickle.dump(existing_metadata, f)
             
-            logger.info(f"Added {len(chunks)} chunks to {username}'s vector DB")
+            logger.info(f"Indexed chunks for '{username}': ntotal now {index.ntotal}; metadata entries {len(existing_metadata)}")
             return True
             
         except Exception as e:
@@ -243,20 +310,26 @@ class RAGManager:
         metadata_path = self.get_user_metadata_path(username)
         
         if not os.path.exists(faiss_index_path) or not os.path.exists(metadata_path):
+            logger.info(f"No vector DB for '{username}' yet (missing index or metadata)")
             return []
         
         try:
             index = faiss.read_index(faiss_index_path)
             with open(metadata_path, 'rb') as f:
                 metadata = pickle.load(f)
+            logger.info(f"Searching FAISS for '{username}': ntotal={index.ntotal}, top_k={top_k}, metadata={len(metadata)}")
             
             query_embedding = self.generate_embeddings([query])
+            logger.info(f"Query embedding shape: {query_embedding.shape} (size={query_embedding.size})")
             if query_embedding.size == 0:
                 return []
             
-            query_embedding = query_embedding / np.linalg.norm(query_embedding, axis=1, keepdims=True)
+            qe_norms = np.linalg.norm(query_embedding, axis=1)
+            logger.info(f"Query embedding norm before normalization: {qe_norms[0]:.6f}")
+            query_embedding = query_embedding / np.maximum(qe_norms, 1e-12)[:, None]
             
             scores, indices = index.search(query_embedding, min(top_k, index.ntotal))
+            logger.info(f"Search returned {len(indices[0]) if len(indices)>0 else 0} results")
             
             results = []
             for score, idx in zip(scores[0], indices[0]):
@@ -266,6 +339,8 @@ class RAGManager:
                         'score': float(score)
                     }
                     results.append(result)
+            if results:
+                logger.info(f"Top result score={results[0]['score']:.6f} from file={results[0]['chunk']['metadata'].get('filename','unknown')}")
             
             return results
             

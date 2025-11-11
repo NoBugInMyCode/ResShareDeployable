@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   Container,
   Paper,
@@ -21,11 +21,14 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { useAuth, useThemeMode } from '../App';
 import { authAPI } from '../utils/api';
+import { logger } from '../utils/logger';
+import { getErrorMessage } from '../utils/errorHandler';
+import { sanitizeUsername } from '../utils/sanitization';
 
 const LoginPage = () => {
   const navigate = useNavigate();
   const { login } = useAuth();
-  const { darkMode, toggleTheme } = useThemeMode();
+  const { darkMode } = useThemeMode();
   
   const [formData, setFormData] = useState({
     username: '',
@@ -43,25 +46,48 @@ const LoginPage = () => {
     if (error) setError('');
   };
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = useCallback(async (e) => {
     e.preventDefault();
     setLoading(true);
     setError('');
 
     try {
-      const data = await authAPI.login(formData.username, formData.password);
+      // Sanitize username input
+      const sanitizedUsername = sanitizeUsername(formData.username);
+
+      // Check if username is empty after sanitization
+      if (!sanitizedUsername) {
+        setError('Username contains invalid characters');
+        setLoading(false);
+        return;
+      }
+
+      // Trim password to prevent whitespace-only passwords
+      const trimmedPassword = formData.password.trim();
+      if (!trimmedPassword) {
+        setError('Password cannot be empty or contain only whitespace');
+        setLoading(false);
+        return;
+      }
+
+      logger.debug('Attempting login', { username: sanitizedUsername });
+      const data = await authAPI.login(sanitizedUsername, trimmedPassword);
+
       if (data.result === 'SUCCESS') {
-        login(formData.username, data.root, data.share_list);
+        logger.debug('Login successful', { username: sanitizedUsername });
+        login(sanitizedUsername, data.root, data.share_list);
         navigate('/home');
       } else {
+        logger.error('Login failed', { result: data.result });
         setError(data.result || 'Login failed');
       }
     } catch (error) {
-      setError(error.message || 'Network error. Please try again.');
+      logger.error('Login error', { error: error.message });
+      setError(getErrorMessage(error, 'Failed to login'));
     } finally {
       setLoading(false);
     }
-  };
+  }, [formData.username, formData.password, login, navigate]);
 
   const togglePasswordVisibility = () => {
     setShowPassword(!showPassword);
@@ -268,5 +294,7 @@ const LoginPage = () => {
     </Container>
   );
 };
+
+LoginPage.propTypes = {};
 
 export default LoginPage; 

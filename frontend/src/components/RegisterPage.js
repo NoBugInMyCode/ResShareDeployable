@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   Container,
   Paper,
@@ -22,6 +22,9 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { useThemeMode } from '../App';
 import { authAPI } from '../utils/api';
+import { logger } from '../utils/logger';
+import { getErrorMessage } from '../utils/errorHandler';
+import { sanitizeUsername } from '../utils/sanitization';
 const RegisterPage = () => {
   const navigate = useNavigate();
   const { darkMode } = useThemeMode();
@@ -46,57 +49,86 @@ const RegisterPage = () => {
     if (success) setSuccess('');
   };
 
-  const validateForm = () => {
-    if (formData.username.length < 3) {
+  const validateForm = useCallback(() => {
+    // Sanitize username input
+    const sanitizedUsername = sanitizeUsername(formData.username);
+
+    // Check if username is empty after sanitization
+    if (!sanitizedUsername) {
+      setError('Username contains invalid characters');
+      return false;
+    }
+
+    if (sanitizedUsername.length < 3) {
       setError('Username must be at least 3 characters long');
       return false;
     }
-    if (formData.password.length < 6) {
+
+    // Trim password to prevent whitespace-only passwords
+    const trimmedPassword = formData.password.trim();
+    if (!trimmedPassword) {
+      setError('Password cannot be empty or contain only whitespace');
+      return false;
+    }
+
+    if (trimmedPassword.length < 6) {
       setError('Password must be at least 6 characters long');
       return false;
     }
+
     if (formData.password !== formData.confirmPassword) {
       setError('Passwords do not match');
       return false;
     }
-    return true;
-  };
 
-  const handleSubmit = async (e) => {
+    return true;
+  }, [formData.username, formData.password, formData.confirmPassword]);
+
+  const handleSubmit = useCallback(async (e) => {
     e.preventDefault();
-    
+
     if (!validateForm()) return;
-    
+
     setLoading(true);
     setError('');
 
     try {
-      const signupData = await authAPI.signup(formData.username, formData.password);
-      console.log("Signup data", signupData);
+      // Sanitize username and trim password
+      const sanitizedUsername = sanitizeUsername(formData.username);
+      const trimmedPassword = formData.password.trim();
+
+      logger.debug('Attempting signup', { username: sanitizedUsername });
+      const signupData = await authAPI.signup(sanitizedUsername, trimmedPassword);
+      logger.debug('Signup data', signupData);
 
       if (signupData.result === 'SUCCESS') {
-        const loginData = await authAPI.login(formData.username, formData.password);
+        logger.debug('Signup successful, attempting auto-login', { username: sanitizedUsername });
+        const loginData = await authAPI.login(sanitizedUsername, trimmedPassword);
 
         if (loginData.result === 'SUCCESS') {
+          logger.debug('Auto-login successful', { username: sanitizedUsername });
           setSuccess('Account created and logged in successfully! Redirecting...');
           setTimeout(() => {
             navigate('/home');
           }, 1500);
         } else {
+          logger.error('Auto-login failed after signup', { result: loginData.result });
           setSuccess('Account created successfully! Please log in.');
           setTimeout(() => {
             navigate('/login');
           }, 1500);
         }
       } else {
+        logger.error('Signup failed', { result: signupData.result });
         setError(signupData.result || 'Registration failed');
       }
     } catch (error) {
-      setError('Network error. Please try again.');
+      logger.error('Signup error', { error: error.message });
+      setError(getErrorMessage(error, 'Failed to signup'));
     } finally {
       setLoading(false);
     }
-  };
+  }, [formData.username, formData.password, validateForm, navigate]);
 
   const togglePasswordVisibility = () => {
     setShowPassword(!showPassword);
@@ -355,5 +387,7 @@ const RegisterPage = () => {
     </Container>
   );
 };
+
+RegisterPage.propTypes = {};
 
 export default RegisterPage; 

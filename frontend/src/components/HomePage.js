@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Container,
   Grid,
@@ -13,22 +13,13 @@ import {
   Chip,
   IconButton,
   Tooltip,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogActions,
-  TextField,
   Button,
-  Snackbar,
-  Alert,
   LinearProgress,
-  Menu,
   MenuItem,
   FormControlLabel,
   Switch,
 } from '@mui/material';
 import {
-  Add,
   CreateNewFolder,
   Upload,
   Folder,
@@ -39,48 +30,51 @@ import {
   Delete,
   MoreVert,
   Download,
-  Visibility,
   Psychology,
   SmartToy,
 } from '@mui/icons-material';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../App';
 import { fileAPI, utils } from '../utils/api';
+import { logger } from '../utils/logger';
+import { getErrorMessage } from '../utils/errorHandler';
+import { sanitizeFileName, sanitizeUsername, safeParseBooleanFromStorage } from '../utils/sanitization';
+import useSnackbar from '../hooks/useSnackbar';
+import useFileDownload from '../hooks/useFileDownload';
+import useItemContextMenu from '../hooks/useItemContextMenu';
+import ConfirmDialog from './ConfirmDialog';
+import FormDialog from './FormDialog';
 
 const HomePage = () => {
   const navigate = useNavigate();
   const { user, rootData, shareList, setRootData, setShareList } = useAuth();
   const [speedDialOpen, setSpeedDialOpen] = useState(false);
   const [createFolderOpen, setCreateFolderOpen] = useState(false);
-  const [newFolderName, setNewFolderName] = useState('');
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
-  const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'info' });
   const [stats, setStats] = useState({
     totalFiles: 0,
     totalFolders: 0,
     sharedItems: 0,
   });
-  const [selectedItem, setSelectedItem] = useState(null);
-  const [menuAnchor, setMenuAnchor] = useState(null);
   const fileInputRef = React.useRef(null);
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
   const [shareUsername, setShareUsername] = useState('');
-  const [aiModeEnabled, setAiModeEnabled] = useState(() => {
-    const saved = localStorage.getItem('aiModeEnabled');
-    return saved !== null ? JSON.parse(saved) : true;
-  });
+  const [aiModeEnabled, setAiModeEnabled] = useState(() =>
+    safeParseBooleanFromStorage('aiModeEnabled', true)
+  );
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [itemToDelete, setItemToDelete] = useState(null);
 
-  useEffect(() => {
-    if (rootData) {
-      calculateStats(rootData);
-    }
-  }, [rootData, shareList]);
+  // Custom hooks
+  const { snackbar, showSuccess, showError, closeSnackbar } = useSnackbar();
+  const { downloadFile, isDownloading } = useFileDownload(showError);
+  const { menuAnchorEl, selectedItem, isMenuOpen, handleMenuOpen, handleMenuClose, clearSelection } = useItemContextMenu();
 
-  const calculateStats = (node) => {
+  const calculateStats = useCallback((node) => {
     let files = 0;
     let folders = 0;
-    
+
     const traverse = (currentNode) => {
       if (currentNode.is_folder) {
         folders++;
@@ -111,62 +105,44 @@ const HomePage = () => {
       totalFolders: folders,
       sharedItems: sharedItemsCount,
     });
-  };
+  }, [shareList]);
 
-  const handleSpeedDialToggle = () => {
-    setSpeedDialOpen(!speedDialOpen);
-  };
+  useEffect(() => {
+    if (rootData) {
+      calculateStats(rootData);
+    }
+  }, [rootData, calculateStats]);
 
   const handleCreateFolder = () => {
     setCreateFolderOpen(true);
     setSpeedDialOpen(false);
   };
 
-  const handleConfirmCreateFolder = async () => {
-    if (!newFolderName.trim()) {
-      setSnackbar({
-        open: true,
-        message: 'Folder name cannot be empty',
-        severity: 'error',
-      });
+  const handleConfirmCreateFolder = async (folderName) => {
+    const sanitized = sanitizeFileName(folderName);
+    if (!sanitized) {
+      showError('Folder name cannot be empty');
       return;
     }
 
-    const validationError = utils.validateFileName(newFolderName);
+    const validationError = utils.validateFileName(sanitized);
     if (validationError) {
-      setSnackbar({
-        open: true,
-        message: validationError,
-        severity: 'error',
-      });
+      showError(validationError);
       return;
     }
 
     try {
-      const response = await fileAPI.createFolder(newFolderName);
-      
+      const response = await fileAPI.createFolder(sanitized);
+
       if (response.result === 'SUCCESS') {
         setRootData(JSON.parse(response.root));
-        setSnackbar({
-          open: true,
-          message: 'Folder created successfully!',
-          severity: 'success',
-        });
+        showSuccess('Folder created successfully!');
         setCreateFolderOpen(false);
-        setNewFolderName('');
       } else {
-        setSnackbar({
-          open: true,
-          message: response.result || 'Failed to create folder',
-          severity: 'error',
-        });
+        showError(response.result || 'Failed to create folder');
       }
     } catch (error) {
-      setSnackbar({
-        open: true,
-        message: error.message || 'Failed to create folder',
-        severity: 'error',
-      });
+      showError(getErrorMessage(error, 'Failed to create folder'));
     }
   };
 
@@ -184,11 +160,7 @@ const HomePage = () => {
 
     const sizeValidation = utils.validateFileSize(file, 1);
     if (!sizeValidation.isValid) {
-      setSnackbar({
-        open: true,
-        message: sizeValidation.error,
-        severity: 'error',
-      });
+      showError(sizeValidation.error);
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
@@ -210,40 +182,28 @@ const HomePage = () => {
         });
       }, 200);
 
-      console.log('[HomePage] Uploading with aiModeEnabled=', aiModeEnabled, 'skip=', !aiModeEnabled);
+      logger.debug('[HomePage] Uploading with aiModeEnabled=', aiModeEnabled, 'skip=', !aiModeEnabled);
       const response = await fileAPI.uploadFile(file, '', !aiModeEnabled);
-      
+
       clearInterval(progressInterval);
       setUploadProgress(100);
 
       if (response.message === 'SUCCESS') {
         setRootData(JSON.parse(response.root));
-        
+
         let message = 'File uploaded successfully!';
         if (response.rag_skipped) {
           message += ' AI processing was skipped.';
         } else if (response.rag_processed) {
           message += ' Ready for AI chat.';
         }
-        
-        setSnackbar({
-          open: true,
-          message: message,
-          severity: 'success',
-        });
+
+        showSuccess(message);
       } else {
-        setSnackbar({
-          open: true,
-          message: response.message || 'Failed to upload file',
-          severity: 'error',
-        });
+        showError(response.message || 'Failed to upload file');
       }
     } catch (error) {
-      setSnackbar({
-        open: true,
-        message: error.message || 'Failed to upload file',
-        severity: 'error',
-      });
+      showError(getErrorMessage(error, 'Failed to upload file'));
     } finally {
       setUploading(false);
       setTimeout(() => setUploadProgress(0), 1000);
@@ -251,10 +211,6 @@ const HomePage = () => {
         fileInputRef.current.value = '';
       }
     }
-  };
-
-  const handleCloseSnackbar = () => {
-    setSnackbar({ ...snackbar, open: false });
   };
 
   const handleFolderClick = (folderName) => {
@@ -269,34 +225,29 @@ const HomePage = () => {
     }
   };
 
-  const handleMenuOpen = (event, item, isShared = false) => {
-    event.stopPropagation();
-    setSelectedItem({ ...item, isShared });
-    setMenuAnchor(event.currentTarget);
+  const handleDeleteClick = (item) => {
+    setItemToDelete(item);
+    setDeleteConfirmOpen(true);
+    handleMenuClose();
   };
 
-  const handleMenuClose = () => {
-    setMenuAnchor(null);
-    setSelectedItem(null);
-  };
-
-  const handleDelete = async () => {
-    if (!selectedItem) return;
+  const handleConfirmDelete = async () => {
+    if (!itemToDelete) return;
 
     try {
       const response = await fileAPI.deleteItem(
-        selectedItem.isShared ? selectedItem.sharedBy + "/" + selectedItem.name : selectedItem.name,
-        !selectedItem.isShared
+        itemToDelete.isShared ? itemToDelete.sharedBy + "/" + itemToDelete.name : itemToDelete.name,
+        !itemToDelete.isShared
       );
 
       if (response.message === 'SUCCESS') {
-        if (selectedItem.isShared) {
+        if (itemToDelete.isShared) {
           // Update share list
           const updatedShareList = { ...shareList };
-          const fromUser = selectedItem.sharedBy;
+          const fromUser = itemToDelete.sharedBy;
           if (updatedShareList[fromUser]) {
             updatedShareList[fromUser] = updatedShareList[fromUser].filter(
-              node => node.name !== selectedItem.name
+              node => node.name !== itemToDelete.name
             );
             if (updatedShareList[fromUser].length === 0) {
               delete updatedShareList[fromUser];
@@ -308,26 +259,15 @@ const HomePage = () => {
           setRootData(JSON.parse(response.root));
         }
 
-        setSnackbar({
-          open: true,
-          message: 'Item deleted successfully!',
-          severity: 'success',
-        });
+        showSuccess(`Deleted "${itemToDelete.name}" successfully`);
       } else {
-        setSnackbar({
-          open: true,
-          message: response.message || 'Failed to delete item',
-          severity: 'error',
-        });
+        showError(response.message || `Failed to delete "${itemToDelete.name}"`);
       }
     } catch (error) {
-      setSnackbar({
-        open: true,
-        message: error.message || 'Failed to delete item',
-        severity: 'error',
-      });
+      showError(getErrorMessage(error, `Failed to delete "${itemToDelete.name}"`));
+    } finally {
+      setItemToDelete(null);
     }
-    handleMenuClose();
   };
 
   const handleDownload = async (itemOrEvent) => {
@@ -336,138 +276,49 @@ const HomePage = () => {
     if (!item) return;
 
     try {
-      console.log("item", item);
+      logger.debug("item", item);
       // Check if the item is from shared items section
       const isShared = item.sharedBy !== undefined;
-      const filePath = isShared 
+      const filePath = isShared
         ? `${item.sharedBy}/${item.name}`
         : item.name;
-      console.log("filePath", filePath, "isShared", isShared);
-      const response = await fileAPI.downloadFile(filePath, isShared);
+      logger.debug("filePath", filePath, "isShared", isShared);
 
-      if (response.ok) {
-        const blob = await response.blob();
-        
-        if ('showSaveFilePicker' in window) {
-          try {
-            const extension = item.name.split('.').pop();
-            const mimeType = blob.type || 'application/octet-stream';
-            
-            const handle = await window.showSaveFilePicker({
-              suggestedName: item.name,
-              types: [{
-                description: 'All Files',
-                accept: {
-                  [mimeType]: [`.${extension}`]
-                }
-              }]
-            });
-            
-            const writable = await handle.createWritable();
-            await writable.write(blob);
-            await writable.close();
-            
-            setSnackbar({
-              open: true,
-              message: 'File downloaded successfully!',
-              severity: 'success',
-            });
-          } catch (err) {
-            if (err.name !== 'AbortError') {
-              console.error('Error saving file:', err);
-              const url = window.URL.createObjectURL(blob);
-              const a = document.createElement('a');
-              a.href = url;
-              a.download = item.name;
-              document.body.appendChild(a);
-              a.click();
-              window.URL.revokeObjectURL(url);
-              document.body.removeChild(a);
-              
-              setSnackbar({
-                open: true,
-                message: 'File downloaded successfully!',
-                severity: 'success',
-              });
-            }
-          }
-        } else {
-          // Fallback for browsers that don't support File System Access API
-          const url = window.URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = item.name;
-          document.body.appendChild(a);
-          a.click();
-          window.URL.revokeObjectURL(url);
-          document.body.removeChild(a);
-          
-          setSnackbar({
-            open: true,
-            message: 'File downloaded successfully!',
-            severity: 'success',
-          });
-        }
-      } else {
-        const data = await response.json();
-        setSnackbar({
-          open: true,
-          message: data.message || 'Failed to download file',
-          severity: 'error',
-        });
+      // Call downloadFile with (path, filename, isShared)
+      const result = await downloadFile(filePath, item.name, isShared);
+      if (result.success && !result.cancelled) {
+        showSuccess(`Downloaded "${item.name}" successfully`);
       }
     } catch (error) {
-      setSnackbar({
-        open: true,
-        message: error.message || 'Failed to download file',
-        severity: 'error',
-      });
+      showError(getErrorMessage(error, `Failed to download "${item.name}"`));
     }
-    handleMenuClose();
+
+    clearSelection();
   };
 
-  const handleView = () => {
+  const handleShare = async (username) => {
+    const sanitized = sanitizeUsername(username || shareUsername);
+    if (!sanitized) {
+      showError('Invalid username');
+      return;
+    }
+
     if (!selectedItem) return;
-    
-    if (selectedItem.isShared) {
-      // For shared items, navigate to the shared item's path
-      const path = `${selectedItem.sharedBy}/${selectedItem.name}`;
-      navigate(`/explorer/${path}`);
-    } else {
-      navigate(`/explorer/${selectedItem.name}`);
-    }
-    handleMenuClose();
-  };
-
-  const handleShare = async () => {
-    if (!shareUsername.trim() || !selectedItem) return;
     const itemToShare = selectedItem.isShared ? selectedItem.node : selectedItem;
-    console.log("itemToShare:", itemToShare);
-    
+    logger.debug("itemToShare:", itemToShare);
+
     try {
-      const data = await fileAPI.shareItem(shareUsername, itemToShare);
+      const data = await fileAPI.shareItem(sanitized, itemToShare);
 
       if (data.message === 'SUCCESS') {
-        setSnackbar({
-          open: true,
-          message: 'Item shared successfully!',
-          severity: 'success',
-        });
+        showSuccess('Item shared successfully!');
         setShareDialogOpen(false);
         setShareUsername('');
       } else {
-        setSnackbar({
-          open: true,
-          message: data.message || 'Failed to share item',
-          severity: 'error',
-        });
+        showError(data.message || 'Failed to share item');
       }
     } catch (error) {
-      setSnackbar({
-        open: true,
-        message: error.message || 'Network error. Please try again.',
-        severity: 'error',
-      });
+      showError(getErrorMessage(error, 'Network error. Please try again.'));
     }
     handleMenuClose();
   };
@@ -555,7 +406,7 @@ const HomePage = () => {
 
   const renderSharedItems = () => {
     let sharedItemsArray = [];
-    
+
     if (shareList && typeof shareList === 'object') {
       Object.entries(shareList).forEach(([fromUser, nodes]) => {
         if (Array.isArray(nodes)) {
@@ -704,7 +555,7 @@ const HomePage = () => {
 
       <Grid container spacing={3}>
         {/* Left Side - My Files and Shared With Me */}
-        <Grid item size ={{xs: 20, sm:9}}>
+        <Grid item size={{ xs: 12, sm: 9 }}>
           {/* My Files Section */}
           <Paper sx={{ p: 3, mb: 3 }}>
             <Box sx={{ display: 'flex', alignItems: 'center', mb: 3 }}>
@@ -717,7 +568,7 @@ const HomePage = () => {
               <Typography variant="body2" color="text.secondary">
                 Maximum file size: 1 MB
               </Typography>
-              
+
               {/* AI Processing Toggle */}
               <FormControlLabel
                 control={
@@ -725,7 +576,7 @@ const HomePage = () => {
                     checked={aiModeEnabled}
                     onChange={(e) => {
                       const enabled = e.target.checked;
-                      console.log('[HomePage] AI toggle changed to', enabled);
+                      logger.debug('[HomePage] AI toggle changed to', enabled);
                       setAiModeEnabled(enabled);
                       localStorage.setItem('aiModeEnabled', JSON.stringify(enabled));
                     }}
@@ -788,7 +639,7 @@ const HomePage = () => {
         </Grid>
 
         {/* Right Side - Stats Cards */}
-        <Grid item size ={{xs: 12, sm:3}}>
+        <Grid item size={{ xs: 12, sm: 3 }}>
           <Grid container spacing={3}>
             <Grid item xs={12}>
               <Paper
@@ -874,37 +725,30 @@ const HomePage = () => {
       </SpeedDial>
 
       {/* Create Folder Dialog */}
-      <Dialog open={createFolderOpen} onClose={() => setCreateFolderOpen(false)} maxWidth="sm" fullWidth>
-        <DialogTitle>Create New Folder</DialogTitle>
-        <DialogContent>
-          <TextField
-            autoFocus
-            margin="dense"
-            label="Folder Name"
-            fullWidth
-            variant="outlined"
-            value={newFolderName}
-            onChange={(e) => setNewFolderName(e.target.value)}
-            onKeyPress={(e) => {
-              if (e.key === 'Enter') {
-                handleConfirmCreateFolder();
-              }
-            }}
-            helperText="Enter a name for the new folder"
-          />
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => {
-            setCreateFolderOpen(false);
-            setNewFolderName('');
-          }}>
-            Cancel
-          </Button>
-          <Button onClick={handleConfirmCreateFolder} variant="contained">
-            Create
-          </Button>
-        </DialogActions>
-      </Dialog>
+      <FormDialog
+        open={createFolderOpen}
+        onClose={() => setCreateFolderOpen(false)}
+        onSubmit={handleConfirmCreateFolder}
+        title="Create New Folder"
+        label="Folder Name"
+        placeholder="Enter folder name"
+        validateInput={(value) => utils.validateFileName(sanitizeFileName(value))}
+        submitText="Create"
+      />
+
+      {/* Delete Confirmation Dialog */}
+      <ConfirmDialog
+        open={deleteConfirmOpen}
+        onClose={() => {
+          setDeleteConfirmOpen(false);
+          setItemToDelete(null);
+        }}
+        onConfirm={handleConfirmDelete}
+        title="Delete Item"
+        message={`Are you sure you want to delete "${itemToDelete?.name}"? This action cannot be undone.`}
+        confirmText="Delete"
+        confirmColor="error"
+      />
 
       {/* Upload Progress */}
       {uploading && (
@@ -932,63 +776,88 @@ const HomePage = () => {
       )}
 
       {/* Snackbar for notifications */}
-      <Snackbar
-        open={snackbar.open}
-        autoHideDuration={4000}
-        onClose={handleCloseSnackbar}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
-      >
-        <Alert onClose={handleCloseSnackbar} severity={snackbar.severity} sx={{ width: '100%' }}>
-          {snackbar.message}
-        </Alert>
-      </Snackbar>
+      {snackbar.open && (
+        <Box
+          sx={{
+            position: 'fixed',
+            bottom: 24,
+            left: 24,
+            zIndex: 1400,
+          }}
+        >
+          <Paper
+            sx={{
+              p: 2,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 2,
+              minWidth: 288,
+              bgcolor: snackbar.severity === 'error' ? 'error.main' :
+                       snackbar.severity === 'success' ? 'success.main' :
+                       snackbar.severity === 'warning' ? 'warning.main' : 'info.main',
+              color: 'white',
+            }}
+          >
+            <Typography variant="body2">{snackbar.message}</Typography>
+            <Button size="small" onClick={closeSnackbar} sx={{ color: 'white', minWidth: 'auto' }}>
+              ✕
+            </Button>
+          </Paper>
+        </Box>
+      )}
 
       {/* Context Menu */}
-      <Menu
-        anchorEl={menuAnchor}
-        open={Boolean(menuAnchor)}
-        onClose={handleMenuClose}
-      >
-        {selectedItem && !selectedItem.is_folder && (
-          <MenuItem onClick={handleDownload}>
-            <Download sx={{ mr: 2 }} />
-            Download
+      {isMenuOpen && (
+        <Paper
+          sx={{
+            position: 'fixed',
+            top: menuAnchorEl?.getBoundingClientRect().top,
+            left: menuAnchorEl?.getBoundingClientRect().left,
+            zIndex: 1300,
+            minWidth: 200,
+          }}
+        >
+          {selectedItem && !selectedItem.is_folder && (
+            <MenuItem onClick={handleDownload}>
+              <Download sx={{ mr: 2 }} />
+              Download
+            </MenuItem>
+          )}
+          <MenuItem onClick={() => setShareDialogOpen(true)}>
+            <Share sx={{ mr: 2 }} />
+            Share
           </MenuItem>
-        )}
-        <MenuItem onClick={() => setShareDialogOpen(true)}>
-          <Share sx={{ mr: 2 }} />
-          Share
-        </MenuItem>
-        <MenuItem onClick={handleDelete} sx={{ color: 'error.main' }}>
-          <Delete sx={{ mr: 2 }} />
-          Delete
-        </MenuItem>
-      </Menu>
+          <MenuItem onClick={() => handleDeleteClick(selectedItem)} sx={{ color: 'error.main' }}>
+            <Delete sx={{ mr: 2 }} />
+            Delete
+          </MenuItem>
+        </Paper>
+      )}
 
       {/* Share Dialog */}
-      <Dialog open={shareDialogOpen} onClose={() => setShareDialogOpen(false)}>
-        <DialogTitle>Share Item</DialogTitle>
-        <DialogContent>
-          <TextField
-            autoFocus
-            margin="dense"
-            label="Username"
-            fullWidth
-            variant="outlined"
-            value={shareUsername}
-            onChange={(e) => setShareUsername(e.target.value)}
-            helperText="Enter the username of the person you want to share with"
-          />
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setShareDialogOpen(false)}>Cancel</Button>
-          <Button onClick={handleShare} variant="contained">
-            Share
-          </Button>
-        </DialogActions>
-      </Dialog>
+      <FormDialog
+        open={shareDialogOpen}
+        onClose={() => {
+          setShareDialogOpen(false);
+          setShareUsername('');
+        }}
+        onSubmit={(username) => {
+          handleShare(username);
+        }}
+        title="Share Item"
+        label="Username"
+        placeholder="Enter the username of the person you want to share with"
+        validateInput={(value) => {
+          const sanitized = sanitizeUsername(value);
+          if (!sanitized) return 'Invalid username';
+          return null;
+        }}
+        submitText="Share"
+      />
     </Container>
   );
 };
 
-export default HomePage; 
+HomePage.propTypes = {};
+
+export default HomePage;
