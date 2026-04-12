@@ -23,7 +23,7 @@ import { useNavigate } from 'react-router-dom';
 import { useThemeMode } from '../App';
 import { authAPI } from '../utils/api';
 import { logger } from '../utils/logger';
-import { getErrorMessage } from '../utils/errorHandler';
+import { getErrorMessage, getBackendErrorMessage } from '../utils/errorHandler';
 import { sanitizeUsername } from '../utils/sanitization';
 const RegisterPage = () => {
   const navigate = useNavigate();
@@ -120,7 +120,14 @@ const RegisterPage = () => {
         }
       } else {
         logger.error('Signup failed', { result: signupData.result });
-        setError(signupData.result || 'Registration failed');
+
+        // Special handling for USER_EXISTS error
+        if (signupData.result === 'USER_EXISTS') {
+          setError('This username is already taken. If it\'s your username, please login. Otherwise, choose a different username.');
+        } else {
+          // Use getBackendErrorMessage to convert error code to user-friendly message
+          setError(getBackendErrorMessage(signupData.result) || 'Registration failed');
+        }
       }
     } catch (error) {
       logger.error('Signup error', { error: error.message });

@@ -1,12 +1,17 @@
 import { logger } from './logger';
 
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:5000';
+const getApiBaseUrl = () => {
+  const url = process.env.REACT_APP_API_BASE_URL || 'http://localhost:5000';
+  return url.replace(/\/+$/, ''); // Remove trailing slashes
+};
+
+const API_BASE_URL = getApiBaseUrl();
 
 if (!process.env.REACT_APP_API_BASE_URL && process.env.NODE_ENV === 'production') {
   logger.warn('API Configuration', 'REACT_APP_API_BASE_URL not configured in production');
 }
 
-const handleResponse = async (response) => {
+const handleResponse = async (response, skipAutoRedirect = false) => {
   let data;
   try {
     data = await response.json();
@@ -20,8 +25,9 @@ const handleResponse = async (response) => {
     const error = new Error(data.message || data.result || 'API request failed');
     error.response = { status: response.status, data };
 
-    if (response.status === 401) {
-      if (window.location.pathname !== '/login') {
+    // Auto-redirect on 401 (session expired), but skip for signup/login endpoints
+    if (response.status === 401 && !skipAutoRedirect) {
+      if (window.location.pathname !== '/login' && window.location.pathname !== '/register') {
         logger.info('Session Expired', 'Redirecting to login');
         window.location.href = '/login';
       }
@@ -45,7 +51,7 @@ export const authAPI = {
       body: JSON.stringify({ username, password }),
     });
 
-    return handleResponse(response);
+    return handleResponse(response, true); // Skip auto-redirect for login errors
   },
 
   signup: async (username, password) => {
@@ -57,7 +63,7 @@ export const authAPI = {
       },
       body: JSON.stringify({ username, password }),
     });
-    return handleResponse(response);
+    return handleResponse(response, true); // Skip auto-redirect for signup errors
   },
 
   logout: async () => {
@@ -84,6 +90,15 @@ export const authAPI = {
 
   checkAuthStatus: async () => {
     const response = await fetch(`${API_BASE_URL}/auth-status`, {
+      method: 'GET',
+      credentials: 'include',
+    });
+
+    return handleResponse(response);
+  },
+
+  fetchSharedItems: async () => {
+    const response = await fetch(`${API_BASE_URL}/shared`, {
       method: 'GET',
       credentials: 'include',
     });
@@ -137,12 +152,30 @@ export const fileAPI = {
       credentials: 'include',
       body: JSON.stringify({ path, is_shared: isShared }),
     });
-    
+
     if (!response.ok) {
       const data = await response.json();
       throw new Error(data.message || 'Download failed');
     }
-    
+
+    return response;
+  },
+
+  downloadFolderAsZip: async (path, isShared = false) => {
+    const response = await fetch(`${API_BASE_URL}/download-zip`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      credentials: 'include',
+      body: JSON.stringify({ path, is_shared: isShared }),
+    });
+
+    if (!response.ok) {
+      const data = await response.json();
+      throw new Error(data.message || 'Download failed');
+    }
+
     return response;
   },
 
@@ -159,17 +192,26 @@ export const fileAPI = {
     return handleResponse(response);
   },
 
-  shareItem: async (targetUsername, node) => {
+  shareItem: async (targetUsername, node, path) => {
+    const payload = {
+      target: targetUsername,
+    };
+
+    if (path) {
+      payload.path = path;
+    }
+
+    if (node) {
+      payload.node = typeof node === 'string' ? node : JSON.stringify(node);
+    }
+
     const response = await fetch(`${API_BASE_URL}/share`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       credentials: 'include',
-      body: JSON.stringify({
-        target: targetUsername,
-        node: typeof node === 'string' ? node : JSON.stringify(node),
-      }),
+      body: JSON.stringify(payload),
     });
     
     return handleResponse(response);

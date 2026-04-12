@@ -56,3 +56,7 @@ MODULE.bazel.lock
 *.pem
 .env.production
 *.log
+.cursor/
+.claude/
+AGENTS.md
+qa-test.txt

@@ -99,11 +99,13 @@ export const escapeHtml = (text) => {
   return text.replace(/[&<>"'/]/g, (char) => map[char]);
 };
 
-export default {
+const sanitization = {
   sanitizeUsername,
   sanitizeFileName,
   sanitizePath,
   safeParseLocalStorage,
   safeParseBooleanFromStorage,
-  escapeHtml
+  escapeHtml,
 };
+
+export default sanitization;

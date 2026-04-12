@@ -22,7 +22,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth, useThemeMode } from '../App';
 import { authAPI } from '../utils/api';
 import { logger } from '../utils/logger';
-import { getErrorMessage } from '../utils/errorHandler';
+import { getErrorMessage, getBackendErrorMessage } from '../utils/errorHandler';
 import { sanitizeUsername } from '../utils/sanitization';
 
 const LoginPage = () => {
@@ -79,7 +79,8 @@ const LoginPage = () => {
         navigate('/home');
       } else {
         logger.error('Login failed', { result: data.result });
-        setError(data.result || 'Login failed');
+        // Use getBackendErrorMessage to convert error code to user-friendly message
+        setError(getBackendErrorMessage(data.result) || 'Login failed');
       }
     } catch (error) {
       logger.error('Login error', { error: error.message });

@@ -1,4 +1,4 @@
-import React, { useState, createContext, useContext, useEffect } from 'react';
+import React, { useState, createContext, useContext, useEffect, useCallback } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { CssBaseline, Box, CircularProgress } from '@mui/material';
@@ -39,7 +39,7 @@ function App() {
   });
   const [user, setUser] = useState(null);
   const [rootData, setRootData] = useState(null);
-  const [shareList, setShareList] = useState([]);
+  const [shareList, setShareList] = useState({});
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
 
   useEffect(() => {
@@ -49,7 +49,7 @@ function App() {
         if (data.authenticated && data.username) {
           setUser(data.username);
           setRootData(data.root);
-          setShareList(data.share_list || []);
+          setShareList(data.share_list || {});
         }
       } catch (error) {
         console.error('Error checking auth status:', error);
@@ -121,14 +121,25 @@ function App() {
   const login = (username, root, shares) => {
     setUser(username);
     setRootData(root);
-    setShareList(shares || []);
+    setShareList(shares || {});
   };
 
   const logout = () => {
     setUser(null);
     setRootData(null);
-    setShareList([]);
+    setShareList({});
   };
+
+  const refreshShareList = useCallback(async () => {
+    try {
+      const data = await authAPI.fetchSharedItems();
+      if (data && data.share_list !== undefined) {
+        setShareList(data.share_list || {});
+      }
+    } catch (error) {
+      console.error('Error refreshing shared items:', error);
+    }
+  }, []);
 
   const authValue = {
     user,
@@ -138,6 +149,7 @@ function App() {
     logout,
     setRootData,
     setShareList,
+    refreshShareList,
   };
 
   const themeValue = {

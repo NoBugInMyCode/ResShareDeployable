@@ -4,6 +4,13 @@ from backend.error import ErrorCode
 from backend.node import Node
 from backend.share_manager import ShareManager
 
+
+def _load_root(username: str):
+    root_json = get_kv(username + " ROOT")
+    if not root_json or root_json.strip() in ["", "\n", " "]:
+        return None
+    return Node.from_json(root_json)
+
 def delete_node(data):
     if 'node_path' not in data:
         return jsonify({'message': ErrorCode.INVALID_REQUEST.name}), 400
@@ -42,17 +49,16 @@ def delete_node(data):
         return jsonify({'message': ErrorCode.SUCCESS.name,
                         'root': root.to_json()}), 200
     else:
-        share_json = get_kv(username + " SHARE_MANAGER")
+        share_json = get_kv(username + " SHARE_MANAGER") or "{}"
         share_manager = ShareManager.from_json(share_json)
 
-        target_node = share_manager.find_node_by_path(node_path)
-        if target_node is None:
-            return jsonify({'message': ErrorCode.NODE_NOT_FOUND.name}), 404
+        parts = node_path.strip("/").split("/", 1)
+        if len(parts) < 2:
+            return jsonify({'message': ErrorCode.INVALID_PATH.name}), 400
 
-        from_user = node_path.strip("/").split("/")[0]
-
-        result = share_manager.delete(from_user, target_node)
+        from_user, target_path = parts[0], parts[1]
+        result = share_manager.delete(from_user, target_path)
         set_kv(username + " SHARE_MANAGER", share_manager.to_json())
 
         return jsonify({'message': result.name,
-                        'root': share_manager.to_json()}), 200
+                        'share_list': share_manager.resolve_for_client(_load_root)}), 200
